@@ -181,6 +181,8 @@ DEFINE_STAT(STAT_ParticleUpdateRTTime);
 DEFINE_STAT(STAT_InfluenceWeightsUpdateRTTime);
 DEFINE_STAT(STAT_GPUSkinUpdateRTTime);
 DEFINE_STAT(STAT_CPUSkinUpdateRTTime);
+DEFINE_STAT(STAT_CPUSKinUEVectorization);
+DEFINE_STAT(STAT_CPUSKinISPCVectorization);
 
 DEFINE_STAT(STAT_UpdateGPUSceneTime);
 
