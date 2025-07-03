@@ -61,6 +61,18 @@ static FORCEINLINE VectorRegister Unpack3( const uint32 *PackedNormal )
 }
 
 /**
+* Apply scale/bias to packed normal byte values and store result in register
+* Only first 3 components are copied. W component is always 0
+*
+* @param PackedNormal - source vector packed with byte components
+* @return vector register with unpacked float values
+*/
+static FORCEINLINE VectorRegister4Float Unpack3Float(const uint32* PackedNormal)
+{
+	return VectorMultiply(VectorLoadSignedByte4(PackedNormal), VectorSetFloat3(1.0f / 127.0f, 1.0f / 127.0f, 1.0f / 127.0f));
+}
+
+/**
 * Apply scale/bias to float register values and store results in memory as packed byte values 
 * Only first 3 components are copied. W component is always 0
 * 
@@ -87,6 +99,18 @@ static FORCEINLINE void Pack3(VectorRegister4Double Normal, uint32* PackedNormal
 * @return vector register with unpacked float values
 */
 static FORCEINLINE VectorRegister Unpack4( const uint32 *PackedNormal )
+{
+	return VectorMultiply(VectorLoadSignedByte4(PackedNormal), VectorSetFloat1(1.0f / 127.0f));
+}
+
+/**
+* Apply scale/bias to packed normal byte values and store result in register
+* All 4 components are copied.
+*
+* @param PackedNormal - source vector packed with byte components
+* @return vector register with unpacked float values
+*/
+static FORCEINLINE VectorRegister4Float Unpack4Float(const uint32* PackedNormal)
 {
 	return VectorMultiply(VectorLoadSignedByte4(PackedNormal), VectorSetFloat1(1.0f / 127.0f));
 }

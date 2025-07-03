@@ -17,10 +17,14 @@
 #include "Stats/StatsTrace.h"
 #include "Rendering/RenderCommandPipes.h"
 #include "SkinnedMeshSceneProxyDesc.h"
+#include "Async/ParallelFor.h"
 
 #if RHI_RAYTRACING
 #include "Engine/SkinnedAssetCommon.h"
 #endif
+
+#include "SkeletalRenderCPUSkin.ispc.generated.h"
+
 
 struct FMorphTargetDelta;
 
@@ -219,6 +223,7 @@ void FSkeletalMeshObjectCPUSkin::UpdateDynamicData_RenderThread(FRHICommandList&
 void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce, FRHICommandList& RHICmdList) const
 {
 	SCOPE_CYCLE_COUNTER( STAT_CPUSkinUpdateRTTime);
+	SCOPED_NAMED_EVENT(CPUSKIN_CacheVecrtices, FColor::Yellow)
 	check(IsInParallelRenderingThread());
 
 	// Source skel mesh and static lod model
@@ -562,11 +567,21 @@ struct FMorphTargetInfo
 	int32						WeightIndex = INDEX_NONE;
 	
 	/** Index of next delta to try applying. This prevents us looking at every delta for every vertex. */
-	int32						NextDeltaIndex = INDEX_NONE;
+	TAtomic<int32>					NextDeltaIndex = INDEX_NONE;
 	/** Array of deltas to apply to mesh, sorted based on the index of the base mesh vert that they affect. */
 	const FMorphTargetDelta*	Deltas = nullptr;
 	/** How many deltas are in array */
 	int32						NumDeltas = 0;
+
+	FMorphTargetInfo() = default;
+	FMorphTargetInfo(const FMorphTargetInfo& Other)
+	{
+		WeightIndex = Other.WeightIndex;
+		const int32 OtherNextDeltaIndex = Other.NextDeltaIndex.Load();
+		NextDeltaIndex.Store(OtherNextDeltaIndex);
+		Deltas = Other.Deltas;
+		NumDeltas = Other.NumDeltas;
+	}
 };
 
 /**
@@ -667,7 +682,7 @@ FORCEINLINE void UpdateMorphedVertex( VertexType& MorphedVertex, const VertexTyp
 			ApplyMorphBlend( MorphedVertex, Info.Deltas[Info.NextDeltaIndex], MorphWeights[Info.WeightIndex] );
 
 			// Update 'next delta to use'
-			Info.NextDeltaIndex += 1;
+			Info.NextDeltaIndex.Store(Info.NextDeltaIndex.Load(EMemoryOrder::Relaxed) + 1);
 		}
 	}
 
@@ -684,7 +699,8 @@ FORCEINLINE void UpdateMorphedVertex( VertexType& MorphedVertex, const VertexTyp
 MSVC_PRAGMA(warning(push))
 MSVC_PRAGMA(warning(disable : 4730)) //mixing _m64 and floating point expressions may result in incorrect code
 
-const VectorRegister		VECTOR_0001				= DECLARE_VECTOR_REGISTER(0.f, 0.f, 0.f, 1.f);
+const VectorRegister		VECTOR_0001				= DECLARE_VECTOR_REGISTER(0., 0., 0., 1.);
+const VectorRegister4f		VECTOR_0001Float =         DECLARE_VECTOR_REGISTER(0.f, 0.f, 0.f, 1.f);
 
 #define FIXED_VERTEX_INDEX 0xFFFF
 
@@ -695,18 +711,18 @@ static void SkinVertexSection(
 	const TArray<float>& MorphWeights,
 	const FSkelMeshRenderSection& Section,
 	const FSkeletalMeshLODRenderData &LOD,
-	FSkinWeightVertexBuffer& WeightBuffer,
-	int32 VertexBufferBaseIndex, 
-	uint32 NumValidMorphs, 
+	const FSkinWeightVertexBuffer& WeightBuffer,
+	const int32 VertexBufferBaseIndex, 
+	const uint32 NumValidMorphs, 
 	int32 &CurBaseVertIdx, 
-	int32 LODIndex, 
-	const FMatrix44f* RESTRICT ReferenceToLocal, 
+	const int32 LODIndex, 
+	const FMatrix44f* RESTRICT ReferenceToLocal,
 	const FClothSimulData* ClothSimData, 
-	float ClothBlendWeight, 
+	const float ClothBlendWeight, 
 	const FMatrix& WorldToLocal,
 	const FVector& WorldScaleAbs )
 {
-	static constexpr VectorRegister VECTOR_INV_65535 = MakeVectorRegisterDoubleConstant(1.0 / 65535, 1.0 / 65535, 1.0 / 65535, 1.0 / 65535);
+	static constexpr VectorRegister4f VECTOR_INV_65535 = MakeVectorRegisterFloatConstant(1.f / 65535, 1.f / 65535, 1.f / 65535, 1.f / 65535);
 	
 	// VertexCopy for morph. Need to allocate right struct
 	// To avoid re-allocation, create 2 statics, and assign right struct
@@ -723,8 +739,9 @@ static void SkinVertexSection(
 	if (NumSoftVertices > 0)
 	{
 		INC_DWORD_STAT_BY(STAT_CPUSkinVertices,NumSoftVertices);
-		for(int32 VertexIndex = VertexBufferBaseIndex;VertexIndex < NumSoftVertices;VertexIndex++,DestVertex++)
+		ParallelFor(NumSoftVertices, [&](const int32 CurrentIndex)
 		{
+			const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
 			const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
 
 			VertexType SrcSoftVertex;
@@ -746,180 +763,195 @@ static void SkinVertexSection(
 			if( NumValidMorphs ) 
 			{
 				MorphedVertex = &VertexCopy;
-				UpdateMorphedVertex<VertexType>( *MorphedVertex, SrcSoftVertex, CurBaseVertIdx, LODIndex, MorphEvalInfos, MorphWeights);
+				UpdateMorphedVertex<VertexType>( *MorphedVertex, SrcSoftVertex, CurBaseVertIdx + CurrentIndex, LODIndex, MorphEvalInfos, MorphWeights);
 			}
 
 			const FMeshToMeshVertData* ClothVertData = nullptr;
 			if (bLODUsesCloth)
 			{
 				constexpr int32 ClothLODBias = 0;  // Use base Cloth LOD mapping data (biased mappings are only required for GPU skinning of raytraced elements)
-				ClothVertData = &Section.ClothMappingDataLODs[ClothLODBias][VertexIndex];
+				ClothVertData = &Section.ClothMappingDataLODs[ClothLODBias][CurrentIndex];
 				FPlatformMisc::Prefetch(ClothVertData, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next cloth vertex
 			}
 
 			const FBoneIndexType* RESTRICT BoneIndices = SrcWeights.InfluenceBones;
 			const uint16* RESTRICT BoneWeights = SrcWeights.InfluenceWeights;
 
-			static VectorRegister	SrcNormals[3];
-			VectorRegister			DstNormals[3];
-			SrcNormals[0] = VectorLoadFloat3_W1( &MorphedVertex->Position);
-			SrcNormals[1] = Unpack3( &MorphedVertex->TangentX.Vector.Packed );
-			SrcNormals[2] = Unpack4( &MorphedVertex->TangentZ.Vector.Packed );
-			VectorRegister Weights = VectorMultiply( VectorLoadURGBA16N(BoneWeights), VECTOR_INV_65535 );
-			VectorRegister ExtraWeights = MakeVectorRegister(0.f, 0.f, 0.f, 0.f);
-			VectorRegister ExtraWeights2 = MakeVectorRegister(0.f, 0.f, 0.f, 0.f);
-			if (MaxSectionBoneInfluences > 4)
-			{
-				ExtraWeights = VectorMultiply( VectorLoadURGBA16N(&BoneWeights[MAX_INFLUENCES_PER_STREAM]), VECTOR_INV_65535 );
-			}
-			if (MaxSectionBoneInfluences > 8)
-			{
-				ExtraWeights2 = VectorMultiply(VectorLoadURGBA16N(&BoneWeights[EXTRA_BONE_INFLUENCES]), VECTOR_INV_65535);
-			}
-			VectorResetFloatRegisters(); // Need to call this to be able to use regular floating point registers again after Unpack and VectorLoadByte4.
+			SCOPE_CYCLE_COUNTER(STAT_CPUSKinUEVectorization)
+			SCOPED_NAMED_EVENT(CPUSKIN_Vectorization, FColor::Red)
+			VectorRegister4f	SrcNormals[3];
+			VectorRegister4f	DstNormals[3];
+			SrcNormals[0] = VectorLoadFloat3_W1(&MorphedVertex->Position);
+			SrcNormals[1] = Unpack3Float(&MorphedVertex->TangentX.Vector.Packed);
+			SrcNormals[2] = Unpack4Float(&MorphedVertex->TangentZ.Vector.Packed);
 
-			const FMatrix44f BoneMatrix0 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_0]]];
-			VectorRegister Weight0 = VectorReplicate( Weights, INFLUENCE_0 );
-			VectorRegister M00	= VectorMultiply( VectorLoadAligned( &BoneMatrix0.M[0][0] ), Weight0 );
-			VectorRegister M10	= VectorMultiply( VectorLoadAligned( &BoneMatrix0.M[1][0] ), Weight0 );
-			VectorRegister M20	= VectorMultiply( VectorLoadAligned( &BoneMatrix0.M[2][0] ), Weight0 );
-			VectorRegister M30	= VectorMultiply( VectorLoadAligned( &BoneMatrix0.M[3][0] ), Weight0 );
+			float UnpakcedBoneWeights[INFLUENCE_11 + 1];			
+			ensureMsgf(MaxSectionBoneInfluences <= INFLUENCE_11 + 1, TEXT("The bone influence count is bigger than what CPU skinning can handle."));
+		
+			alignas(64) float AveragedMatrix[16];
+			ispc::GetAveragedMatrix(MaxSectionBoneInfluences, &BoneWeights[0], BoneMap, BoneIndices,
+				(const ispc::FMatrix44f*)ReferenceToLocal, &UnpakcedBoneWeights[0], &AveragedMatrix[0]);
 
-			if (MaxSectionBoneInfluences > 1 )
-			{
-				const FMatrix44f BoneMatrix1 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_1]]];
-				VectorRegister Weight1 = VectorReplicate( Weights, INFLUENCE_1 );
-				M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix1.M[0][0] ), Weight1, M00 );
-				M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix1.M[1][0] ), Weight1, M10 );
-				M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix1.M[2][0] ), Weight1, M20 );
-				M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix1.M[3][0] ), Weight1, M30 );
+			VectorRegister4f M00 = VectorLoadAligned(&AveragedMatrix[0]);
+			VectorRegister4f M10 = VectorLoadAligned(&AveragedMatrix[4]);
+			VectorRegister4f M20 = VectorLoadAligned(&AveragedMatrix[8]);
+			VectorRegister4f M30 = VectorLoadAligned(&AveragedMatrix[12]);
 
-				if (MaxSectionBoneInfluences > 2 )
-				{
-					const FMatrix44f BoneMatrix2 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_2]]];
-					VectorRegister Weight2 = VectorReplicate( Weights, INFLUENCE_2 );
-					M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix2.M[0][0] ), Weight2, M00 );
-					M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix2.M[1][0] ), Weight2, M10 );
-					M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix2.M[2][0] ), Weight2, M20 );
-					M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix2.M[3][0] ), Weight2, M30 );
+			//VectorRegister4f Weights = VectorMultiply(VectorLoadURGBA16N(BoneWeights), VECTOR_INV_65535);
+			//VectorRegister4f ExtraWeights = MakeVectorRegister(0.f, 0.f, 0.f, 0.f);
+			//VectorRegister4f ExtraWeights2 = MakeVectorRegister(0.f, 0.f, 0.f, 0.f);
+			//if (MaxSectionBoneInfluences > 4)
+			//{
+			//	ExtraWeights = VectorMultiply(VectorLoadURGBA16N(&BoneWeights[MAX_INFLUENCES_PER_STREAM]), VECTOR_INV_65535);
+			//}
+			//if (MaxSectionBoneInfluences > 8)
+			//{
+			//	ExtraWeights2 = VectorMultiply(VectorLoadURGBA16N(&BoneWeights[EXTRA_BONE_INFLUENCES]), VECTOR_INV_65535);
+			//}
+			//VectorResetFloatRegisters(); // Need to call this to be able to use regular floating point registers again after Unpack and VectorLoadByte4.
 
-					if (MaxSectionBoneInfluences > 3 )
-					{
-						const FMatrix44f BoneMatrix3 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_3]]];
-						VectorRegister Weight3 = VectorReplicate( Weights, INFLUENCE_3 );
-						M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix3.M[0][0] ), Weight3, M00 );
-						M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix3.M[1][0] ), Weight3, M10 );
-						M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix3.M[2][0] ), Weight3, M20 );
-						M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix3.M[3][0] ), Weight3, M30 );
-					}
+			//const FMatrix44f BoneMatrix0 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_0]]];
+			//VectorRegister4f Weight0 = VectorReplicate(Weights, INFLUENCE_0);
+			//VectorRegister4f M00 = VectorMultiply(VectorLoadAligned(&BoneMatrix0.M[0][0]), Weight0);
+			//VectorRegister4f M10 = VectorMultiply(VectorLoadAligned(&BoneMatrix0.M[1][0]), Weight0);
+			//VectorRegister4f M20 = VectorMultiply(VectorLoadAligned(&BoneMatrix0.M[2][0]), Weight0);
+			//VectorRegister4f M30 = VectorMultiply(VectorLoadAligned(&BoneMatrix0.M[3][0]), Weight0);
 
-					if (MaxSectionBoneInfluences > 4)
-					{
-						const FMatrix44f BoneMatrix4 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_4]]];
-						VectorRegister Weight4 = VectorReplicate( ExtraWeights, INFLUENCE_4 - INFLUENCE_4 );
-						M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix4.M[0][0] ), Weight4, M00 );
-						M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix4.M[1][0] ), Weight4, M10 );
-						M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix4.M[2][0] ), Weight4, M20 );
-						M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix4.M[3][0] ), Weight4, M30 );
+			//if (MaxSectionBoneInfluences > 1)
+			//{
+			//	const FMatrix44f BoneMatrix1 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_1]]];
+			//	VectorRegister4f Weight1 = VectorReplicate(Weights, INFLUENCE_1);
+			//	M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix1.M[0][0]), Weight1, M00);
+			//	M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix1.M[1][0]), Weight1, M10);
+			//	M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix1.M[2][0]), Weight1, M20);
+			//	M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix1.M[3][0]), Weight1, M30);
 
-						if (MaxSectionBoneInfluences > 5)
-						{
-							const FMatrix44f BoneMatrix5 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_5]]];
-							VectorRegister Weight5 = VectorReplicate( ExtraWeights, INFLUENCE_5 - INFLUENCE_4 );
-							M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix5.M[0][0] ), Weight5, M00 );
-							M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix5.M[1][0] ), Weight5, M10 );
-							M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix5.M[2][0] ), Weight5, M20 );
-							M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix5.M[3][0] ), Weight5, M30 );
+			//	if (MaxSectionBoneInfluences > 2)
+			//	{
+			//		const FMatrix44f BoneMatrix2 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_2]]];
+			//		VectorRegister4f Weight2 = VectorReplicate(Weights, INFLUENCE_2);
+			//		M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix2.M[0][0]), Weight2, M00);
+			//		M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix2.M[1][0]), Weight2, M10);
+			//		M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix2.M[2][0]), Weight2, M20);
+			//		M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix2.M[3][0]), Weight2, M30);
 
-							if (MaxSectionBoneInfluences > 6)
-							{
-								const FMatrix44f BoneMatrix6 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_6]]];
-								VectorRegister Weight6 = VectorReplicate( ExtraWeights, INFLUENCE_6 - INFLUENCE_4 );
-								M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix6.M[0][0] ), Weight6, M00 );
-								M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix6.M[1][0] ), Weight6, M10 );
-								M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix6.M[2][0] ), Weight6, M20 );
-								M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix6.M[3][0] ), Weight6, M30 );
+			//		if (MaxSectionBoneInfluences > 3)
+			//		{
+			//			const FMatrix44f BoneMatrix3 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_3]]];
+			//			VectorRegister4f Weight3 = VectorReplicate(Weights, INFLUENCE_3);
+			//			M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix3.M[0][0]), Weight3, M00);
+			//			M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix3.M[1][0]), Weight3, M10);
+			//			M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix3.M[2][0]), Weight3, M20);
+			//			M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix3.M[3][0]), Weight3, M30);
+			//		}
 
-								if (MaxSectionBoneInfluences > 7)
-								{
-									const FMatrix44f BoneMatrix7 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_7]]];
-									VectorRegister Weight7 = VectorReplicate( ExtraWeights, INFLUENCE_7 - INFLUENCE_4 );
-									M00	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix7.M[0][0] ), Weight7, M00 );
-									M10	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix7.M[1][0] ), Weight7, M10 );
-									M20	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix7.M[2][0] ), Weight7, M20 );
-									M30	= VectorMultiplyAdd( VectorLoadAligned( &BoneMatrix7.M[3][0] ), Weight7, M30 );
+			//		if (MaxSectionBoneInfluences > 4)
+			//		{
+			//			const FMatrix44f BoneMatrix4 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_4]]];
+			//			VectorRegister4f Weight4 = VectorReplicate(ExtraWeights, INFLUENCE_4 - INFLUENCE_4);
+			//			M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix4.M[0][0]), Weight4, M00);
+			//			M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix4.M[1][0]), Weight4, M10);
+			//			M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix4.M[2][0]), Weight4, M20);
+			//			M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix4.M[3][0]), Weight4, M30);
 
-									if (MaxSectionBoneInfluences > 8)
-									{
-										const FMatrix44f BoneMatrix8 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_8]]];
-										VectorRegister Weight8 = VectorReplicate( ExtraWeights2, INFLUENCE_8 - INFLUENCE_8 );
-										M00 = VectorMultiplyAdd(VectorLoadAligned( &BoneMatrix8.M[0][0]), Weight8, M00 );
-										M10 = VectorMultiplyAdd(VectorLoadAligned( &BoneMatrix8.M[1][0]), Weight8, M10 );
-										M20 = VectorMultiplyAdd(VectorLoadAligned( &BoneMatrix8.M[2][0]), Weight8, M20 );
-										M30 = VectorMultiplyAdd(VectorLoadAligned( &BoneMatrix8.M[3][0]), Weight8, M30 );
+			//			if (MaxSectionBoneInfluences > 5)
+			//			{
+			//				const FMatrix44f BoneMatrix5 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_5]]];
+			//				VectorRegister4f Weight5 = VectorReplicate(ExtraWeights, INFLUENCE_5 - INFLUENCE_4);
+			//				M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix5.M[0][0]), Weight5, M00);
+			//				M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix5.M[1][0]), Weight5, M10);
+			//				M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix5.M[2][0]), Weight5, M20);
+			//				M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix5.M[3][0]), Weight5, M30);
 
-										if (MaxSectionBoneInfluences > 9)
-										{
-											const FMatrix44f BoneMatrix9 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_9]]];
-											VectorRegister Weight9 = VectorReplicate(ExtraWeights2, INFLUENCE_9 - INFLUENCE_8);
-											M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[0][0]), Weight9, M00);
-											M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[1][0]), Weight9, M10);
-											M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[2][0]), Weight9, M20);
-											M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[3][0]), Weight9, M30);
+			//				if (MaxSectionBoneInfluences > 6)
+			//				{
+			//					const FMatrix44f BoneMatrix6 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_6]]];
+			//					VectorRegister4f Weight6 = VectorReplicate(ExtraWeights, INFLUENCE_6 - INFLUENCE_4);
+			//					M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix6.M[0][0]), Weight6, M00);
+			//					M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix6.M[1][0]), Weight6, M10);
+			//					M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix6.M[2][0]), Weight6, M20);
+			//					M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix6.M[3][0]), Weight6, M30);
 
-											if (MaxSectionBoneInfluences > 10)
-											{
-												const FMatrix44f BoneMatrix10 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_10]]];
-												VectorRegister Weight10 = VectorReplicate(ExtraWeights2, INFLUENCE_10 - INFLUENCE_8);
-												M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[0][0]), Weight10, M00);
-												M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[1][0]), Weight10, M10);
-												M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[2][0]), Weight10, M20);
-												M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[3][0]), Weight10, M30);
+			//					if (MaxSectionBoneInfluences > 7)
+			//					{
+			//						const FMatrix44f BoneMatrix7 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_7]]];
+			//						VectorRegister4f Weight7 = VectorReplicate(ExtraWeights, INFLUENCE_7 - INFLUENCE_4);
+			//						M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix7.M[0][0]), Weight7, M00);
+			//						M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix7.M[1][0]), Weight7, M10);
+			//						M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix7.M[2][0]), Weight7, M20);
+			//						M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix7.M[3][0]), Weight7, M30);
 
-												if (MaxSectionBoneInfluences > 11)
-												{
-													const FMatrix44f BoneMatrix11 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_11]]];
-													VectorRegister Weight11 = VectorReplicate(ExtraWeights2, INFLUENCE_11 - INFLUENCE_8);
-													M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[0][0]), Weight11, M00);
-													M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[1][0]), Weight11, M10);
-													M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[2][0]), Weight11, M20);
-													M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[3][0]), Weight11, M30);
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
+			//						if (MaxSectionBoneInfluences > 8)
+			//						{
+			//							const FMatrix44f BoneMatrix8 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_8]]];
+			//							VectorRegister4f Weight8 = VectorReplicate(ExtraWeights2, INFLUENCE_8 - INFLUENCE_8);
+			//							M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix8.M[0][0]), Weight8, M00);
+			//							M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix8.M[1][0]), Weight8, M10);
+			//							M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix8.M[2][0]), Weight8, M20);
+			//							M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix8.M[3][0]), Weight8, M30);
 
-			VectorRegister N_xxxx = VectorReplicate( SrcNormals[0], 0 );
-			VectorRegister N_yyyy = VectorReplicate( SrcNormals[0], 1 );
-			VectorRegister N_zzzz = VectorReplicate( SrcNormals[0], 2 );
-			DstNormals[0] = VectorMultiplyAdd( N_xxxx, M00, VectorMultiplyAdd( N_yyyy, M10, VectorMultiplyAdd( N_zzzz, M20, M30 ) ) );
+			//							if (MaxSectionBoneInfluences > 9)
+			//							{
+			//								const FMatrix44f BoneMatrix9 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_9]]];
+			//								VectorRegister4f Weight9 = VectorReplicate(ExtraWeights2, INFLUENCE_9 - INFLUENCE_8);
+			//								M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[0][0]), Weight9, M00);
+			//								M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[1][0]), Weight9, M10);
+			//								M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[2][0]), Weight9, M20);
+			//								M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix9.M[3][0]), Weight9, M30);
+
+			//								if (MaxSectionBoneInfluences > 10)
+			//								{
+			//									const FMatrix44f BoneMatrix10 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_10]]];
+			//									VectorRegister4f Weight10 = VectorReplicate(ExtraWeights2, INFLUENCE_10 - INFLUENCE_8);
+			//									M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[0][0]), Weight10, M00);
+			//									M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[1][0]), Weight10, M10);
+			//									M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[2][0]), Weight10, M20);
+			//									M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix10.M[3][0]), Weight10, M30);
+
+			//									if (MaxSectionBoneInfluences > 11)
+			//									{
+			//										const FMatrix44f BoneMatrix11 = ReferenceToLocal[BoneMap[BoneIndices[INFLUENCE_11]]];
+			//										VectorRegister4f Weight11 = VectorReplicate(ExtraWeights2, INFLUENCE_11 - INFLUENCE_8);
+			//										M00 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[0][0]), Weight11, M00);
+			//										M10 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[1][0]), Weight11, M10);
+			//										M20 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[2][0]), Weight11, M20);
+			//										M30 = VectorMultiplyAdd(VectorLoadAligned(&BoneMatrix11.M[3][0]), Weight11, M30);
+			//									}
+			//								}
+			//							}
+			//						}
+			//					}
+			//				}
+			//			}
+			//		}
+			//	}
+			//}
+
+			VectorRegister4f N_xxxx = VectorReplicate(SrcNormals[0], 0);
+			VectorRegister4f N_yyyy = VectorReplicate(SrcNormals[0], 1);
+			VectorRegister4f N_zzzz = VectorReplicate(SrcNormals[0], 2);
+			DstNormals[0] = VectorMultiplyAdd(N_xxxx, M00, VectorMultiplyAdd(N_yyyy, M10, VectorMultiplyAdd(N_zzzz, M20, M30)));
 
 			DstNormals[1] = VectorZero();
-			N_xxxx = VectorReplicate( SrcNormals[1], 0 );
-			N_yyyy = VectorReplicate( SrcNormals[1], 1 );
-			N_zzzz = VectorReplicate( SrcNormals[1], 2 );
-			DstNormals[1] = VectorNormalize(VectorMultiplyAdd( N_xxxx, M00, VectorMultiplyAdd( N_yyyy, M10, VectorMultiply( N_zzzz, M20 ) ) ));
+			N_xxxx = VectorReplicate(SrcNormals[1], 0);
+			N_yyyy = VectorReplicate(SrcNormals[1], 1);
+			N_zzzz = VectorReplicate(SrcNormals[1], 2);
+			DstNormals[1] = VectorNormalize(VectorMultiplyAdd(N_xxxx, M00, VectorMultiplyAdd(N_yyyy, M10, VectorMultiply(N_zzzz, M20))));
 
-			N_xxxx = VectorReplicate( SrcNormals[2], 0 );
-			N_yyyy = VectorReplicate( SrcNormals[2], 1 );
-			N_zzzz = VectorReplicate( SrcNormals[2], 2 );
+			N_xxxx = VectorReplicate(SrcNormals[2], 0);
+			N_yyyy = VectorReplicate(SrcNormals[2], 1);
+			N_zzzz = VectorReplicate(SrcNormals[2], 2);
 			DstNormals[2] = VectorZero();
-			DstNormals[2] = VectorNormalize(VectorMultiplyAdd( N_xxxx, M00, VectorMultiplyAdd( N_yyyy, M10, VectorMultiply( N_zzzz, M20 ) ) ));
+			DstNormals[2] = VectorNormalize(VectorMultiplyAdd(N_xxxx, M00, VectorMultiplyAdd(N_yyyy, M10, VectorMultiply(N_zzzz, M20))));
 
 
 			// carry over the W component (sign of basis determinant) 
-			DstNormals[2] = VectorMultiplyAdd( VECTOR_0001, SrcNormals[2], DstNormals[2] );
+			DstNormals[2] = VectorMultiplyAdd(VECTOR_0001Float, SrcNormals[2], DstNormals[2]);
 
 			// Write to memory:
-			VectorStoreFloat3( DstNormals[0], &DestVertex->Position );
-			Pack3( DstNormals[1], &DestVertex->TangentX.Vector.Packed );
-			Pack4( DstNormals[2], &DestVertex->TangentZ.Vector.Packed );
+			VectorStoreFloat3(DstNormals[0], &DestVertex[CurrentIndex].Position);
+			Pack3(DstNormals[1], &DestVertex[CurrentIndex].TangentX.Vector.Packed);
+			Pack4(DstNormals[2], &DestVertex[CurrentIndex].TangentZ.Vector.Packed);
 			VectorResetFloatRegisters(); // Need to call this to be able to use regular floating point registers again after Pack().
 
 			// Apply cloth. This code has been adapted from GpuSkinVertexFactory.usf
@@ -990,7 +1022,7 @@ static void SkinVertexSection(
 				const float VertexBlend = ClothBlendWeight * (1.0f - (ClothVertData->SourceMeshVertIndices[3] / 65535.0f));
 				
 				// Lerp between skinned and simulated position
-				DestVertex->Position = FMath::Lerp(DestVertex->Position, SimulatedPosition, VertexBlend);
+				DestVertex[CurrentIndex].Position = FMath::Lerp(DestVertex[CurrentIndex].Position, SimulatedPosition, VertexBlend);
 
 				// recompute tangent & normal
 				FVector TangentX;
@@ -998,27 +1030,28 @@ static void SkinVertexSection(
 				ClothCPU::ClothingTangents(*ClothVertData, *ClothSimData, SimulatedPositionWorld, WorldToLocal, WorldScaleAbs, TangentX, TangentZ);
 
 				// Lerp between skinned and simulated tangents
-				FVector SkinnedTangentX = DestVertex->TangentX.ToFVector();
-				FVector4 SkinnedTangentZ = DestVertex->TangentZ.ToFVector4();
-				DestVertex->TangentX = (TangentX * VertexBlend) + (SkinnedTangentX * (1.0f - VertexBlend));
-				DestVertex->TangentZ = FVector4((TangentZ * VertexBlend) + (SkinnedTangentZ * (1.0f - VertexBlend)), SkinnedTangentZ.W);
+				FVector SkinnedTangentX = DestVertex[CurrentIndex].TangentX.ToFVector();
+				FVector4 SkinnedTangentZ = DestVertex[CurrentIndex].TangentZ.ToFVector4();
+				DestVertex[CurrentIndex].TangentX = (TangentX * VertexBlend) + (SkinnedTangentX * (1.0f - VertexBlend));
+				DestVertex[CurrentIndex].TangentZ = FVector4((TangentZ * VertexBlend) + (SkinnedTangentZ * (1.0f - VertexBlend)), SkinnedTangentZ.W);
 			}
 
 			// Copy UVs.
 			for (int32 UVIndex = 0; UVIndex < NumberOfUVs; ++UVIndex)
 			{
-				DestVertex->TextureCoordinates[UVIndex] = FVector2D(LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Section.GetVertexBufferIndex() + VertexIndex, UVIndex));
+				DestVertex[CurrentIndex].TextureCoordinates[UVIndex] = FVector2D(LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Section.GetVertexBufferIndex() + VertexIndex, UVIndex));
 			}
+		});
 
-			CurBaseVertIdx++;
-		}
+		CurBaseVertIdx += NumSoftVertices;
+		DestVertex += NumSoftVertices;
 	}
 }
 
 template<typename VertexType, int32 NumberOfUVs>
 static void SkinVertices(
 	FFinalSkinVertex* DestVertex, 
-	FMatrix44f* ReferenceToLocal, 
+	FMatrix44f* ReferenceToLocal,
 	int32 LODIndex, 
 	FSkeletalMeshLODRenderData& LOD,
 	FSkinWeightVertexBuffer& WeightBuffer,
@@ -1040,10 +1073,10 @@ static void SkinVertices(
 	check(MaxGPUSkinBones <= FGPUBaseSkinVertexFactory::GHardwareMaxGPUSkinBones);
 
 	// Prefetch all matrices
-	for ( uint32 MatrixIndex=0; MatrixIndex < MaxGPUSkinBones; MatrixIndex+=2 )
+	/*for ( uint32 MatrixIndex=0; MatrixIndex < MaxGPUSkinBones; MatrixIndex+=2 )
 	{
 		FPlatformMisc::Prefetch( ReferenceToLocal + MatrixIndex );
-	}
+	}*/
 
 	int32 CurBaseVertIdx = 0;
 
@@ -1195,6 +1228,5 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	return false;
 }
-
 
 MSVC_PRAGMA(warning(pop))
