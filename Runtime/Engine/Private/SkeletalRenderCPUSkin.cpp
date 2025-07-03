@@ -788,7 +788,6 @@ static void SkinVertexSection(
 			DstNormals[2] = VectorZero();
 			DstNormals[2] = VectorNormalize(VectorMultiplyAdd(N_xxxx, M00, VectorMultiplyAdd(N_yyyy, M10, VectorMultiply(N_zzzz, M20))));
 
-
 			// carry over the W component (sign of basis determinant) 
 			DstNormals[2] = VectorMultiplyAdd(VECTOR_0001Float, SrcNormals[2], DstNormals[2]);
 
@@ -799,6 +798,7 @@ static void SkinVertexSection(
 			VectorResetFloatRegisters(); // Need to call this to be able to use regular floating point registers again after Pack().
 
 			// Copy UVs.
+			const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
 			for (int32 UVIndex = 0; UVIndex < NumberOfUVs; ++UVIndex)
 			{
 				DestVertex[CurrentIndex].TextureCoordinates[UVIndex] = FVector2D(LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(Section.GetVertexBufferIndex() + VertexIndex, UVIndex));
@@ -916,13 +916,6 @@ static void SkinVertexSection(
 				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
 				SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
 
-				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
-				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
-				for (uint32 j = 0; j < VertexType::NumTexCoords; j++)
-				{
-					MorphedVertex.UVs[j] = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV_Typed<VertexType::StaticMeshVertexUVType>(VertexBufferIndex, j);
-				}
-
 				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 			});
 		}
@@ -937,11 +930,7 @@ static void SkinVertexSection(
 				VertexType SrcSoftVertex;
 				SrcSoftVertex.Position = DestVertex->Position;
 				SrcSoftVertex.TangentX = DestVertex->TangentX;
-				SrcSoftVertex.TangentZ = DestVertex->TangentZ;
-				for (uint32 j = 0; j < VertexType::NumTexCoords; j++)
-				{
-					SrcSoftVertex.UVs[j] = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV_Typed<VertexType::StaticMeshVertexUVType>(VertexBufferIndex, j);
-				}
+				SrcSoftVertex.TangentZ = DestVertex->TangentZ;	
 
 				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 			});
@@ -962,13 +951,6 @@ static void SkinVertexSection(
 				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
 				SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
 
-				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
-				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
-				for (uint32 j = 0; j < VertexType::NumTexCoords; j++)
-				{
-					SrcSoftVertex.UVs[j] = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV_Typed<VertexType::StaticMeshVertexUVType>(VertexBufferIndex, j);
-				}
-
 				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 				CpuSkinningClothSimulation(CurrentIndex);
 			});
@@ -985,11 +967,6 @@ static void SkinVertexSection(
 				SrcSoftVertex.Position = DestVertex->Position;
 				SrcSoftVertex.TangentX = DestVertex->TangentX;
 				SrcSoftVertex.TangentZ = DestVertex->TangentZ;
-				//Calculating the UVs
-				for (uint32 j = 0; j < VertexType::NumTexCoords; j++)
-				{
-					SrcSoftVertex.UVs[j] = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV_Typed<VertexType::StaticMeshVertexUVType>(VertexBufferIndex, j);
-				}
 
 				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 				CpuSkinningClothSimulation(CurrentIndex);
@@ -1025,12 +1002,6 @@ static void SkinVertices(
 
 	const uint32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
 	check(MaxGPUSkinBones <= FGPUBaseSkinVertexFactory::GHardwareMaxGPUSkinBones);
-
-	// Prefetch all matrices
-	/*for ( uint32 MatrixIndex=0; MatrixIndex < MaxGPUSkinBones; MatrixIndex+=2 )
-	{
-		FPlatformMisc::Prefetch( ReferenceToLocal + MatrixIndex );
-	}*/
 
 	int32 CurBaseVertIdx = 0;
 
