@@ -985,6 +985,7 @@ static void SkinVertexSection(
 				SrcSoftVertex.Position = DestVertex->Position;
 				SrcSoftVertex.TangentX = DestVertex->TangentX;
 				SrcSoftVertex.TangentZ = DestVertex->TangentZ;
+				//Calculating the UVs
 				for (uint32 j = 0; j < VertexType::NumTexCoords; j++)
 				{
 					SrcSoftVertex.UVs[j] = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV_Typed<VertexType::StaticMeshVertexUVType>(VertexBufferIndex, j);
