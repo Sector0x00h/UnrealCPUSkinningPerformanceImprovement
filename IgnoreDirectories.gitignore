@@ -1,0 +1,17 @@
+# Ignore everything except CPU Skinning Codes
+
+ThirdParty
+Programs
+Editor
+Developer
+Runtime
+!Runtime/Engine/Private/SkeletalRender.h
+!Runtime/Engine/Private/SkeletalRenderCPUSkin.h
+!Runtime/Engine/Private/SkeletalRenderCPUSkin.ispc
+!Runtime/RenderCore/Private/RenderCore.cpp
+!Runtime/RenderCore/Private/RenderCore.h
+
+UnrealClient.Target.cs
+UnrealEditor.Target.cs
+UnrealGame.Target.cs
+UnrealServer.Target.cs
