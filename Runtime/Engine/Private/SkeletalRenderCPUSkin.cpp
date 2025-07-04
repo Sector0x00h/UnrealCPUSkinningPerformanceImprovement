@@ -897,78 +897,105 @@ static void SkinVertexSection(
 		};
 
 		// If there is no morph targets and cloth simulation just call the vertex transformation codes
+		const int32 LoopedUnrollingCount = 800;
+		int32 NumLoops = NumSoftVertices / LoopedUnrollingCount;
+		if (NumSoftVertices % LoopedUnrollingCount != 0)
+		{
+			NumLoops++;
+		}
+
 		if (NumValidMorphs == 0 && !bLODUsesCloth)
 		{
-			ParallelFor(NumSoftVertices, [&](const int32 CurrentIndex)
+			ParallelFor(NumLoops, [&](const int32 LoopUrolledIndex)
 			{
-				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
-				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
+				const int32 StartIndex = LoopedUnrollingCount * LoopUrolledIndex;
+				const int32 EndIndex = LoopUrolledIndex != NumLoops - 1 ? StartIndex + LoopedUnrollingCount : NumSoftVertices;
+				for (int32 CurrentIndex = StartIndex; CurrentIndex < EndIndex; CurrentIndex++)
+				{
+					const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
+					const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
 
-				VertexType SrcSoftVertex;
-				const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
-				FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
+					VertexType SrcSoftVertex;
+					const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
+					FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
 
-				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
-				SrcSoftVertex.Position = VertexPosition;
-				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
-				SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
+					const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+					SrcSoftVertex.Position = VertexPosition;
+					SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
+					SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
 
-				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
+					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
+				}
 			});
 		}
 		else if (NumValidMorphs > 0 && !bLODUsesCloth) // If there are morph targets but no cloth simulation then using the morphed vertices as input to transform the vertices
 		{
-			ParallelFor(NumSoftVertices, [&](const int32 CurrentIndex)
+			ParallelFor(NumLoops, [&](const int32 LoopUrolledIndex)
 			{
-				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
-				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
-				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+				const int32 StartIndex = LoopedUnrollingCount * LoopUrolledIndex;
+				const int32 EndIndex = LoopUrolledIndex != NumLoops - 1 ? StartIndex + LoopedUnrollingCount : NumSoftVertices;
+				for (int32 CurrentIndex = StartIndex; CurrentIndex < EndIndex; CurrentIndex++)
+				{
+					const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
+					const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
+					const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
-				// Using already morphed vertex
-				VertexType SrcSoftVertex;
-				SrcSoftVertex.Position = DestVertex[CurrentIndex].Position;
-				SrcSoftVertex.TangentX = DestVertex[CurrentIndex].TangentX;
-				SrcSoftVertex.TangentZ = DestVertex[CurrentIndex].TangentZ;
+					// Using already morphed vertex
+					VertexType SrcSoftVertex;
+					SrcSoftVertex.Position = DestVertex[CurrentIndex].Position;
+					SrcSoftVertex.TangentX = DestVertex[CurrentIndex].TangentX;
+					SrcSoftVertex.TangentZ = DestVertex[CurrentIndex].TangentZ;
 
-				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
+					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
+				}
 			});
 		}
 		else if (NumValidMorphs == 0 && bLODUsesCloth) // If there are no morph targets but there is cloth simulation
 		{
-			ParallelFor(NumSoftVertices, [&](const int32 CurrentIndex)
+			ParallelFor(NumLoops, [&](const int32 LoopUrolledIndex)
 			{
-				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
-				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
+				const int32 StartIndex = LoopedUnrollingCount * LoopUrolledIndex;
+				const int32 EndIndex = LoopUrolledIndex != NumLoops - 1 ? StartIndex + LoopedUnrollingCount : NumSoftVertices;
+				for (int32 CurrentIndex = StartIndex; CurrentIndex < EndIndex; CurrentIndex++)
+				{
+					const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
+					const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
 
-				VertexType SrcSoftVertex;
-				const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
-				FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
-				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+					VertexType SrcSoftVertex;
+					const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
+					FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
+					const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
-				SrcSoftVertex.Position = VertexPosition;
-				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
-				SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
+					SrcSoftVertex.Position = VertexPosition;
+					SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
+					SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
 
-				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
-				CpuSkinningClothSimulation(CurrentIndex);
+					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
+					CpuSkinningClothSimulation(CurrentIndex);
+				}
 			});
 		}
 		else //(NumValidMorphs > 0 && bLODUsesCloth) If there are morph targets and cloth simulation then using the morphed vertices as input to transform the vertices. Cloth simulation is also added.
 		{
-			ParallelFor(NumSoftVertices, [&](const int32 CurrentIndex)
+			ParallelFor(NumLoops, [&](const int32 LoopUrolledIndex)
 			{
-				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
-				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
-				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+				const int32 StartIndex = LoopedUnrollingCount * LoopUrolledIndex;
+				const int32 EndIndex = LoopUrolledIndex != NumLoops - 1 ? StartIndex + LoopedUnrollingCount : NumSoftVertices;
+				for (int32 CurrentIndex = StartIndex; CurrentIndex < EndIndex; CurrentIndex++)
+				{
+					const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
+					const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
+					const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
-				// Using already morphed vertex
-				VertexType SrcSoftVertex;
-				SrcSoftVertex.Position = DestVertex[CurrentIndex].Position;
-				SrcSoftVertex.TangentX = DestVertex[CurrentIndex].TangentX;
-				SrcSoftVertex.TangentZ = DestVertex[CurrentIndex].TangentZ;
+					// Using already morphed vertex
+					VertexType SrcSoftVertex;
+					SrcSoftVertex.Position = DestVertex[CurrentIndex].Position;
+					SrcSoftVertex.TangentX = DestVertex[CurrentIndex].TangentX;
+					SrcSoftVertex.TangentZ = DestVertex[CurrentIndex].TangentZ;
 
-				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
-				CpuSkinningClothSimulation(CurrentIndex);
+					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
+					CpuSkinningClothSimulation(CurrentIndex);
+				}
 			});
 		}
 
