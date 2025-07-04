@@ -733,10 +733,10 @@ static void SkinVertexSection(
 				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
 
 				VertexType SrcSoftVertex;
-				const FVector& VertexPosition = (FVector)LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
+				const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
 				FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
 
-				SrcSoftVertex.Position = (FVector3f)VertexPosition;
+				SrcSoftVertex.Position = VertexPosition;
 				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
 				SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
 				VertexType MorphedVertex;
@@ -809,13 +809,10 @@ static void SkinVertexSection(
 		// Lambda calculating the CpuSkinClothSimulation
 		auto CpuSkinningClothSimulation = [&](const int32 CurrentIndex)
 		{
-			const FMeshToMeshVertData* ClothVertData = nullptr;
-			if (bLODUsesCloth)
-			{
-				constexpr int32 ClothLODBias = 0;  // Use base Cloth LOD mapping data (biased mappings are only required for GPU skinning of raytraced elements)
-				ClothVertData = &Section.ClothMappingDataLODs[ClothLODBias][CurrentIndex];
-				FPlatformMisc::Prefetch(ClothVertData, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next cloth vertex
-			}
+			constexpr int32 ClothLODBias = 0;  // Use base Cloth LOD mapping data (biased mappings are only required for GPU skinning of raytraced elements)
+			const FMeshToMeshVertData* ClothVertData = &Section.ClothMappingDataLODs[ClothLODBias][CurrentIndex];
+			FPlatformMisc::Prefetch(ClothVertData, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next cloth vertex
+			
 			// Apply cloth. This code has been adapted from GpuSkinVertexFactory.usf
 			if (ClothVertData != nullptr && ClothVertData->SourceMeshVertIndices[3] < FIXED_VERTEX_INDEX)
 			{
@@ -911,7 +908,7 @@ static void SkinVertexSection(
 				const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
 				FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
 
-				FSkinWeightInfo SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 				SrcSoftVertex.Position = VertexPosition;
 				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
 				SrcSoftVertex.TangentZ = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexBufferIndex);
@@ -925,12 +922,13 @@ static void SkinVertexSection(
 			{
 				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
 				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
-				FSkinWeightInfo SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
+				// Using already morphed vertex
 				VertexType SrcSoftVertex;
-				SrcSoftVertex.Position = DestVertex->Position;
-				SrcSoftVertex.TangentX = DestVertex->TangentX;
-				SrcSoftVertex.TangentZ = DestVertex->TangentZ;	
+				SrcSoftVertex.Position = DestVertex[CurrentIndex].Position;
+				SrcSoftVertex.TangentX = DestVertex[CurrentIndex].TangentX;
+				SrcSoftVertex.TangentZ = DestVertex[CurrentIndex].TangentZ;
 
 				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 			});
@@ -945,7 +943,7 @@ static void SkinVertexSection(
 				VertexType SrcSoftVertex;
 				const FVector3f& VertexPosition = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexBufferIndex);
 				FPlatformMisc::Prefetch(&VertexPosition, PLATFORM_CACHE_LINE_SIZE);	// Prefetch next vertices
-				FSkinWeightInfo SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
 				SrcSoftVertex.Position = VertexPosition;
 				SrcSoftVertex.TangentX = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexBufferIndex);
@@ -961,12 +959,13 @@ static void SkinVertexSection(
 			{
 				const int32 VertexIndex = VertexBufferBaseIndex + CurrentIndex;
 				const int32 VertexBufferIndex = Section.GetVertexBufferIndex() + VertexIndex;
-				FSkinWeightInfo SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
+				const FSkinWeightInfo& SrcWeights = WeightBuffer.GetVertexSkinWeights(VertexBufferIndex);
 
+				// Using already morphed vertex
 				VertexType SrcSoftVertex;
-				SrcSoftVertex.Position = DestVertex->Position;
-				SrcSoftVertex.TangentX = DestVertex->TangentX;
-				SrcSoftVertex.TangentZ = DestVertex->TangentZ;
+				SrcSoftVertex.Position = DestVertex[CurrentIndex].Position;
+				SrcSoftVertex.TangentX = DestVertex[CurrentIndex].TangentX;
+				SrcSoftVertex.TangentZ = DestVertex[CurrentIndex].TangentZ;
 
 				VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 				CpuSkinningClothSimulation(CurrentIndex);
