@@ -223,7 +223,7 @@ void FSkeletalMeshObjectCPUSkin::UpdateDynamicData_RenderThread(FRHICommandList&
 void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce, FRHICommandList& RHICmdList) const
 {
 	SCOPE_CYCLE_COUNTER( STAT_CPUSkinUpdateRTTime);
-	SCOPED_NAMED_EVENT(CPUSKIN_CacheVecrtices, FColor::Yellow)
+	SCOPED_NAMED_EVENT(CPUSKIN_CacheVertices, FColor::Yellow)
 	check(IsInParallelRenderingThread());
 
 	// Source skel mesh and static lod model
