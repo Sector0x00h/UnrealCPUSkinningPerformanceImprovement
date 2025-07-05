@@ -904,6 +904,9 @@ static void SkinVertexSection(
 			NumLoops++;
 		}
 
+		// If the number of vertices are too small, don't bother with threads.
+		const bool bDoSingleThread = NumLoops <= 1;
+
 		if (NumValidMorphs == 0 && !bLODUsesCloth)
 		{
 			ParallelFor(NumLoops, [&](const int32 LoopUrolledIndex)
@@ -926,7 +929,7 @@ static void SkinVertexSection(
 
 					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 				}
-			});
+			}, bDoSingleThread);
 		}
 		else if (NumValidMorphs > 0 && !bLODUsesCloth) // If there are morph targets but no cloth simulation then using the morphed vertices as input to transform the vertices
 		{
@@ -948,7 +951,7 @@ static void SkinVertexSection(
 
 					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 				}
-			});
+			}, bDoSingleThread);
 		}
 		else if (NumValidMorphs == 0 && bLODUsesCloth) // If there are no morph targets but there is cloth simulation
 		{
@@ -973,7 +976,7 @@ static void SkinVertexSection(
 					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 					CpuSkinningClothSimulation(CurrentIndex);
 				}
-			});
+			}, bDoSingleThread);
 		}
 		else //(NumValidMorphs > 0 && bLODUsesCloth) If there are morph targets and cloth simulation then using the morphed vertices as input to transform the vertices. Cloth simulation is also added.
 		{
@@ -996,7 +999,7 @@ static void SkinVertexSection(
 					VertexTransformCalculation(CurrentIndex, SrcSoftVertex, SrcWeights);
 					CpuSkinningClothSimulation(CurrentIndex);
 				}
-			});
+			}, bDoSingleThread);
 		}
 
 		CurBaseVertIdx += NumSoftVertices;
