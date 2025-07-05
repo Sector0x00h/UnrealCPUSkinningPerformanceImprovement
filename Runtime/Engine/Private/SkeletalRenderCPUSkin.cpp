@@ -763,7 +763,7 @@ static void SkinVertexSection(
 
 			// Aligning to 64 to make it scaleable up to AVX512
 			alignas(64) float UnpakcedBoneWeights[INFLUENCE_11 + 1];
-			ensureMsgf(MaxSectionBoneInfluences <= INFLUENCE_11 + 1, TEXT("The bone influence count is bigger than what CPU skinning can handle."));
+			checkf(MaxSectionBoneInfluences <= INFLUENCE_11 + 1, TEXT("The bone influence count is bigger than what CPU skinning can handle. It can end up with memory stomps"));
 
 			// Aligning to 64 to make it scaleable up to AVX512
 			alignas(64) float AveragedMatrix[16];
