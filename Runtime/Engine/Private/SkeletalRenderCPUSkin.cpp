@@ -722,6 +722,8 @@ static void SkinVertexSection(
 	const int32 MaxSectionBoneInfluences = WeightBuffer.GetMaxBoneInfluences();
 	const bool bLODUsesCloth = LOD.HasClothData() && ClothSimData != nullptr && ClothBlendWeight > 0.0f;
 	const int32 NumSoftVertices = Section.GetNumVertices();
+
+	// Applying the morph tagets to the vertices
 	if (NumSoftVertices > 0)
 	{
 		INC_DWORD_STAT_BY(STAT_CPUSkinVertices, NumSoftVertices);
@@ -759,9 +761,11 @@ static void SkinVertexSection(
 			SrcNormals[1] = Unpack3Float(&MorphedVertex.TangentX.Vector.Packed);
 			SrcNormals[2] = Unpack4Float(&MorphedVertex.TangentZ.Vector.Packed);
 
+			// Aligning to 64 to make it scaleable up to AVX512
 			alignas(64) float UnpakcedBoneWeights[INFLUENCE_11 + 1];
 			ensureMsgf(MaxSectionBoneInfluences <= INFLUENCE_11 + 1, TEXT("The bone influence count is bigger than what CPU skinning can handle."));
 
+			// Aligning to 64 to make it scaleable up to AVX512
 			alignas(64) float AveragedMatrix[16];
 			ispc::GetAveragedMatrix(MaxSectionBoneInfluences, &BoneWeights[0], BoneMap, BoneIndices,
 				(const ispc::FMatrix44f*)ReferenceToLocal, &UnpakcedBoneWeights[0], &AveragedMatrix[0]);
