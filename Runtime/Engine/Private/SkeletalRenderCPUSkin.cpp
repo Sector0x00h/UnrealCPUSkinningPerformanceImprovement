@@ -899,8 +899,8 @@ static void SkinVertexSection(
 				DestVertex[CurrentIndex].TangentZ = FVector4((TangentZ * VertexBlend) + (SkinnedTangentZ * (1.0f - VertexBlend)), SkinnedTangentZ.W);
 			}
 		};
-
-		// If there is no morph targets and cloth simulation just call the vertex transformation codes
+		
+		// Adding loop unrolling for the ParallelFor
 		const int32 LoopedUnrollingCount = 800;
 		int32 NumLoops = NumSoftVertices / LoopedUnrollingCount;
 		if (NumSoftVertices % LoopedUnrollingCount != 0)
@@ -911,6 +911,7 @@ static void SkinVertexSection(
 		// If the number of vertices are too small, don't bother with threads.
 		const bool bDoSingleThread = NumLoops <= 1;
 
+		// If there is no morph targets and cloth simulation just call the vertex transformation codes
 		if (NumValidMorphs == 0 && !bLODUsesCloth)
 		{
 			ParallelFor(NumLoops, [&](const int32 LoopUrolledIndex)
