@@ -4,7 +4,7 @@
 static uniform float Inv_65535 = 1.f / 65535.f;
 
 
-inline export void GetAveragedMatrix(const uniform uint16 NumBoneWeights, const uniform uint16 BoneWeights[], const uniform uint16 BoneMap[], const uniform uint16 BoneIndices[],
+inline export void CpuSkinningGetAveragedMatrix(const uniform uint16 NumBoneWeights, const uniform uint16 BoneWeights[], const uniform uint16 BoneMap[], const uniform uint16 BoneIndices[],
 	const uniform FMatrix44f ReferenceToLocal[],
 	uniform float OutBoneWeights[], 
 	uniform float OutMatrix[])

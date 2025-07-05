@@ -767,7 +767,7 @@ static void SkinVertexSection(
 
 			// Aligning to 64 to make it scaleable up to AVX512
 			alignas(64) float AveragedMatrix[16];
-			ispc::GetAveragedMatrix(MaxSectionBoneInfluences, &BoneWeights[0], BoneMap, BoneIndices,
+			ispc::CpuSkinningGetAveragedMatrix(MaxSectionBoneInfluences, &BoneWeights[0], BoneMap, BoneIndices,
 				(const ispc::FMatrix44f*)ReferenceToLocal, &UnpakcedBoneWeights[0], &AveragedMatrix[0]);
 
 			VectorRegister4f M00 = VectorLoadAligned(&AveragedMatrix[0]);
