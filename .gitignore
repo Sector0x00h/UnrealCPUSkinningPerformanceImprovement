@@ -3,3 +3,7 @@
 /Editor
 /Programs
 /Runtime
+
+!/Runtime/Engine/Private/SkeletalRenderCPUSkin.cpp
+!/Runtime/Engine/Private/SkeletalRenderCPUSkin.ispc
+!/Runtime/Engine/Private/SkeletalRender.cpp
